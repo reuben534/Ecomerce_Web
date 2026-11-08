@@ -202,6 +202,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .auth-state-panel > .account-name { color: var(--ink); font-family: 'Space Grotesk', sans-serif; font-size: 18px; }
 .auth-state-panel > .account-email { margin-top: -10px; }
 .account-verified { display: flex; align-items: center; gap: 5px; color: #347252; font-size: 10px; }
+.account-mfa { width: 100%; padding-top: 14px; border-top: 1px solid #e8e9e3; text-align: left; }
+.account-mfa-heading { display: flex; align-items: center; gap: 7px; color: var(--pine); font-size: 10px; font-weight: 600; }
+.account-mfa-heading strong { margin-left: auto; color: #6e746a; font-size: 9px; }
+.account-mfa .auth-form { margin-top: 13px; }
+.account-mfa .mfa-enrollment { margin-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.mfa-enrollment > img { width: 148px; height: 148px; padding: 8px; border: 1px solid var(--line); background: white; }
+.mfa-enrollment > p { margin: 0; color: #777a72; text-align: center; font-size: 9px; line-height: 1.5; }
+.mfa-enrollment > code { max-width: 100%; padding: 8px 10px; overflow-wrap: anywhere; color: var(--pine); background: #f0f2e9; font-size: 10px; letter-spacing: .06em; }
+.mfa-enrollment .auth-hint { color: #858980; }
 .auth-spinner { animation: auth-spin .8s linear infinite; }
 .drawer-header { padding-bottom: 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .drawer-header h2 { margin: 6px 0 0; font-family: 'Space Grotesk', sans-serif; font-size: 26px; font-weight: 500; }

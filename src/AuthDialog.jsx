@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, LoaderCircle, LockKeyhole, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, LoaderCircle, LockKeyhole, ShieldCheck, X } from 'lucide-react';
 
 async function authRequest(path, body) {
   const response = await fetch(`/api/auth/${path}`, {
@@ -35,6 +35,8 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
   const [pendingEmail, setPendingEmail] = useState('');
   const [verificationToken, setVerificationToken] = useState('');
   const [devResetCode, setDevResetCode] = useState('');
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaEnrollment, setMfaEnrollment] = useState(null);
   const verificationStarted = useRef(false);
 
   useEffect(() => {
@@ -57,6 +59,7 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
 
   function changeMode(nextMode) {
     setMode(nextMode);
+    setMfaRequired(false);
     setError('');
     setMessage('');
   }
@@ -71,6 +74,7 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
       const result = await authRequest('login', {
         email: fields.get('email'),
         password: fields.get('password'),
+        mfaCode: fields.get('mfaCode'),
       });
       onAuthenticated(result.user);
       onClose();
@@ -78,6 +82,9 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
       if (requestError.code === 'EMAIL_NOT_VERIFIED') {
         setPendingEmail(fields.get('email'));
         setMode('verification-required');
+      } else if (requestError.code === 'MFA_REQUIRED' || requestError.code === 'INVALID_MFA_CODE') {
+        setMfaRequired(true);
+        setError(requestError.message);
       } else {
         setError(requestError.message);
       }
@@ -210,6 +217,57 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
     }
   }
 
+  async function startMfaSetup() {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await authRequest('mfa/setup', {});
+      setMfaEnrollment(result);
+      setMessage('Scan the QR code with your authenticator app, then enter its current code.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enableMfa(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    const fields = new FormData(event.currentTarget);
+    try {
+      const result = await authRequest('mfa/enable', { code: fields.get('code') });
+      onAuthenticated(result.user);
+      setMfaEnrollment(null);
+      setMessage('Authenticator verification is enabled.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableMfa(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    const fields = new FormData(event.currentTarget);
+    try {
+      const result = await authRequest('mfa/disable', {
+        password: fields.get('password'),
+        code: fields.get('code'),
+      });
+      onAuthenticated(result.user);
+      setMessage('Authenticator verification is disabled.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const heading = {
     login: 'Welcome back',
     register: 'Make yourself at home',
@@ -255,6 +313,7 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
             <form className="auth-form" onSubmit={handleLogin}>
               <AuthField label="Email address" name="email" type="email" autoComplete="email" />
               <AuthField label="Password" name="password" type="password" autoComplete="current-password" />
+              {mfaRequired && <AuthField label="Authenticator code" name="mfaCode" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} />}
               <button className="auth-text-link forgot-link" type="button" onClick={() => changeMode('forgot')}>
                 Forgot password?
               </button>
@@ -342,6 +401,39 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
               <p className="account-name">{user.firstName} {user.lastName}</p>
               <p className="account-email">{user.email}</p>
               <div className="account-verified"><Check size={14} /> Email verified</div>
+              <section className="account-mfa" aria-label="Two-step verification">
+                <div className="account-mfa-heading"><ShieldCheck size={17} /><span>Authenticator app</span><strong>{user.mfaEnabled ? 'On' : 'Off'}</strong></div>
+                {user.mfaEnabled ? (
+                  <form className="auth-form" onSubmit={disableMfa}>
+                    <p className="auth-hint">To turn it off, confirm your password and current authenticator code.</p>
+                    <AuthField label="Password" name="password" type="password" autoComplete="current-password" />
+                    <AuthField label="Authenticator code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} />
+                    <button className="button button-dark auth-submit" type="submit" disabled={busy}>
+                      {busy ? <LoaderCircle className="auth-spinner" size={17} /> : 'Turn off two-step verification'}
+                    </button>
+                  </form>
+                ) : mfaEnrollment ? (
+                  <div className="mfa-enrollment">
+                    <img src={mfaEnrollment.qrCode} alt="Authenticator setup QR code" />
+                    <p>Scan with your authenticator app. If needed, enter this setup key manually:</p>
+                    <code>{mfaEnrollment.secret}</code>
+                    <form className="auth-form" onSubmit={enableMfa}>
+                      <AuthField label="Current six-digit code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} />
+                      <button className="button button-dark auth-submit" type="submit" disabled={busy}>
+                        {busy ? <LoaderCircle className="auth-spinner" size={17} /> : 'Enable two-step verification'}
+                      </button>
+                    </form>
+                    <p className="auth-hint">Recovery codes are not available in this preview. Keep access to your authenticator app.</p>
+                  </div>
+                ) : (
+                  <div className="mfa-enrollment">
+                    <p className="auth-hint">Add a six-digit authenticator code to sign-in. Recovery codes are not available in this preview.</p>
+                    <button className="button button-dark auth-submit" type="button" disabled={busy} onClick={startMfaSetup}>
+                      {busy ? <LoaderCircle className="auth-spinner" size={17} /> : 'Set up authenticator'}
+                    </button>
+                  </div>
+                )}
+              </section>
               <button className="button button-dark auth-submit" type="button" disabled={busy} onClick={signOut}>
                 {busy ? <LoaderCircle className="auth-spinner" size={17} /> : <>Sign out <ArrowRight size={16} /></>}
               </button>

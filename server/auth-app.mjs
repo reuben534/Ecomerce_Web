@@ -6,11 +6,14 @@ import bcrypt from 'bcryptjs';
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import helmet from 'helmet';
+import { authenticator } from 'otplib';
+import QRCode from 'qrcode';
 
 const SESSION_COOKIE = 'smartshop_session';
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const TOKEN_LIFETIME_MS = 30 * 60 * 1000;
 const PASSWORD_HASH_ROUNDS = 12;
+authenticator.options = { window: 1 };
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -48,6 +51,7 @@ function publicUser(user) {
     email: user.email,
     phone: user.phone,
     emailVerified: Boolean(user.email_verified_at),
+    mfaEnabled: Boolean(user.mfa_enabled),
   };
 }
 
@@ -64,6 +68,8 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
       email TEXT NOT NULL COLLATE NOCASE UNIQUE,
       phone TEXT NOT NULL,
       password_hash TEXT NOT NULL,
+      mfa_secret TEXT,
+      mfa_enabled INTEGER NOT NULL DEFAULT 0,
       email_verified_at INTEGER,
       created_at INTEGER NOT NULL
     );
@@ -83,6 +89,9 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
     );
     CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
   `);
+  const userColumns = new Set(database.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+  if (!userColumns.has('mfa_secret')) database.exec('ALTER TABLE users ADD COLUMN mfa_secret TEXT');
+  if (!userColumns.has('mfa_enabled')) database.exec('ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0');
 
   const app = express();
   app.disable('x-powered-by');
@@ -242,7 +251,54 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
       if (!user.email_verified_at) {
         return response.status(403).json({ error: 'Please verify your email address before signing in.', code: 'EMAIL_NOT_VERIFIED' });
       }
+      if (user.mfa_enabled) {
+        const code = typeof request.body.mfaCode === 'string' ? request.body.mfaCode.trim() : '';
+        if (!code) return response.status(401).json({ error: 'Enter your authenticator code.', code: 'MFA_REQUIRED' });
+        if (!/^\d{6}$/.test(code) || !authenticator.check(code, user.mfa_secret)) {
+          return response.status(401).json({ error: 'Authenticator code is invalid.', code: 'INVALID_MFA_CODE' });
+        }
+      }
       createSession(response, user.id);
+      response.json({ user: publicUser(user) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/auth/mfa/setup', strictRateLimit(), requireUser, async (request, response, next) => {
+    try {
+      const secret = authenticator.generateSecret();
+      const otpauth = authenticator.keyuri(request.user.email, 'SmartShop', secret);
+      const qrCode = await QRCode.toDataURL(otpauth);
+      database.prepare('UPDATE users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?')
+        .run(secret, request.user.id);
+      response.json({ secret, qrCode });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/auth/mfa/enable', strictRateLimit(), requireUser, (request, response) => {
+    const code = typeof request.body.code === 'string' ? request.body.code.trim() : '';
+    if (!request.user.mfa_secret || !/^\d{6}$/.test(code) || !authenticator.check(code, request.user.mfa_secret)) {
+      return response.status(400).json({ error: 'Authenticator code is invalid. Try the current six-digit code.' });
+    }
+    database.prepare('UPDATE users SET mfa_enabled = 1 WHERE id = ?').run(request.user.id);
+    const user = database.prepare('SELECT * FROM users WHERE id = ?').get(request.user.id);
+    response.json({ user: publicUser(user) });
+  });
+
+  app.post('/api/auth/mfa/disable', strictRateLimit(), requireUser, async (request, response, next) => {
+    try {
+      const password = typeof request.body.password === 'string' ? request.body.password : '';
+      const code = typeof request.body.code === 'string' ? request.body.code.trim() : '';
+      const passwordMatches = await bcrypt.compare(password, request.user.password_hash);
+      const codeMatches = /^\d{6}$/.test(code) && authenticator.check(code, request.user.mfa_secret ?? '');
+      if (!request.user.mfa_enabled || !passwordMatches || !codeMatches) {
+        return response.status(400).json({ error: 'Password or authenticator code is incorrect.' });
+      }
+      database.prepare('UPDATE users SET mfa_secret = NULL, mfa_enabled = 0 WHERE id = ?').run(request.user.id);
+      const user = database.prepare('SELECT * FROM users WHERE id = ?').get(request.user.id);
       response.json({ user: publicUser(user) });
     } catch (error) {
       next(error);

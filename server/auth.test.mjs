@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { authenticator } from 'otplib';
 import { createAuthApp } from './auth-app.mjs';
 
 let server;
@@ -19,10 +20,10 @@ after(async () => {
   database.close();
 });
 
-async function post(path, body) {
+async function post(path, body, cookie) {
   return fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   });
 }
@@ -71,7 +72,34 @@ test('registration, email verification, login, and password reset work end to en
     email: 'ada@example.com',
     phone: '+27123456789',
     emailVerified: true,
+    mfaEnabled: false,
   });
+
+  const setup = await post('/api/auth/mfa/setup', {}, sessionCookie);
+  assert.equal(setup.status, 200);
+  const setupBody = await setup.json();
+  assert.match(setupBody.qrCode, /^data:image\/png;base64,/);
+  assert.ok(authenticator.check(authenticator.generate(setupBody.secret), setupBody.secret));
+
+  const enableMfa = await post('/api/auth/mfa/enable', { code: authenticator.generate(setupBody.secret) }, sessionCookie);
+  assert.equal(enableMfa.status, 200);
+  assert.equal((await enableMfa.json()).user.mfaEnabled, true);
+
+  const missingMfa = await post('/api/auth/login', { email: 'ada@example.com', password: 'StrongPass123!' });
+  assert.equal(missingMfa.status, 401);
+  assert.equal((await missingMfa.json()).code, 'MFA_REQUIRED');
+
+  const mfaCode = authenticator.generate(setupBody.secret);
+  const mfaLogin = await post('/api/auth/login', { email: 'ada@example.com', password: 'StrongPass123!', mfaCode });
+  assert.equal(mfaLogin.status, 200);
+  const mfaSession = mfaLogin.headers.get('set-cookie')?.split(';')[0];
+
+  const disableMfa = await post('/api/auth/mfa/disable', {
+    password: 'StrongPass123!',
+    code: authenticator.generate(setupBody.secret),
+  }, sessionCookie);
+  assert.equal(disableMfa.status, 200);
+  assert.equal((await disableMfa.json()).user.mfaEnabled, false);
 
   const resetRequest = await post('/api/auth/forgot-password', { email: 'ada@example.com' });
   assert.equal(resetRequest.status, 200);
@@ -94,6 +122,8 @@ test('registration, email verification, login, and password reset work end to en
 
   const expiredSession = await fetch(`${baseUrl}/api/auth/me`, { headers: { cookie: sessionCookie } });
   assert.equal((await expiredSession.json()).user, null);
+  const expiredMfaSession = await fetch(`${baseUrl}/api/auth/me`, { headers: { cookie: mfaSession } });
+  assert.equal((await expiredMfaSession.json()).user, null);
 
   const oldPasswordLogin = await post('/api/auth/login', {
     email: 'ada@example.com',
