@@ -364,6 +364,7 @@ function App() {
   const searchInputRef = useRef(null);
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('verify')) setAuthOpen(true);
     let active = true;
     fetch('/api/auth/me', { credentials: 'same-origin' })
       .then((response) => response.ok ? response.json() : null)
