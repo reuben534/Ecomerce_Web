@@ -217,12 +217,14 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
     }
   }
 
-  async function startMfaSetup() {
+  async function startMfaSetup(event) {
+    event.preventDefault();
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const result = await authRequest('mfa/setup', {});
+      const fields = new FormData(event.currentTarget);
+      const result = await authRequest('mfa/setup', { password: fields.get('password') });
       setMfaEnrollment(result);
       setMessage('Scan the QR code with your authenticator app, then enter its current code.');
     } catch (requestError) {
@@ -428,9 +430,12 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
                 ) : (
                   <div className="mfa-enrollment">
                     <p className="auth-hint">Add a six-digit authenticator code to sign-in. Recovery codes are not available in this preview.</p>
-                    <button className="button button-dark auth-submit" type="button" disabled={busy} onClick={startMfaSetup}>
-                      {busy ? <LoaderCircle className="auth-spinner" size={17} /> : 'Set up authenticator'}
-                    </button>
+                    <form className="auth-form" onSubmit={startMfaSetup}>
+                      <AuthField label="Confirm password" name="password" type="password" autoComplete="current-password" />
+                      <button className="button button-dark auth-submit" type="submit" disabled={busy}>
+                        {busy ? <LoaderCircle className="auth-spinner" size={17} /> : 'Set up authenticator'}
+                      </button>
+                    </form>
                   </div>
                 )}
               </section>

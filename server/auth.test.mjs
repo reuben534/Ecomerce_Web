@@ -75,7 +75,7 @@ test('registration, email verification, login, and password reset work end to en
     mfaEnabled: false,
   });
 
-  const setup = await post('/api/auth/mfa/setup', {}, sessionCookie);
+  const setup = await post('/api/auth/mfa/setup', { password: 'StrongPass123!' }, sessionCookie);
   assert.equal(setup.status, 200);
   const setupBody = await setup.json();
   assert.match(setupBody.qrCode, /^data:image\/png;base64,/);

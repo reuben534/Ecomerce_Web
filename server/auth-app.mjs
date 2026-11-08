@@ -1,6 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomBytes, randomInt, createHash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, randomInt, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import express from 'express';
@@ -17,6 +17,47 @@ authenticator.options = { window: 1 };
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function loadMfaEncryptionKey(databasePath, production) {
+  if (process.env.MFA_ENCRYPTION_KEY) {
+    if (!/^[\da-f]{64}$/i.test(process.env.MFA_ENCRYPTION_KEY)) {
+      throw new Error('MFA_ENCRYPTION_KEY must be 32 bytes encoded as 64 hexadecimal characters.');
+    }
+    return Buffer.from(process.env.MFA_ENCRYPTION_KEY, 'hex');
+  }
+  if (production) throw new Error('MFA_ENCRYPTION_KEY must be configured in production.');
+  if (databasePath === ':memory:') return randomBytes(32);
+
+  const keyPath = `${databasePath}.key`;
+  try {
+    const key = readFileSync(keyPath);
+    if (key.length !== 32) throw new Error('Local MFA key has an invalid length.');
+    chmodSync(keyPath, 0o600);
+    return key;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    const key = randomBytes(32);
+    writeFileSync(keyPath, key, { flag: 'wx', mode: 0o600 });
+    return key;
+  }
+}
+
+function encryptMfaSecret(secret, key) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), encrypted].map((part) => part.toString('base64url')).join('.');
+}
+
+function decryptMfaSecret(value, key) {
+  const [iv, tag, encrypted] = value.split('.').map((part) => Buffer.from(part, 'base64url'));
+  if (!iv || !tag || !encrypted || iv.length !== 12 || tag.length !== 16) {
+    throw new Error('Stored authenticator secret is invalid.');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
 function normalizeEmail(value) {
@@ -58,6 +99,8 @@ function publicUser(user) {
 export function createAuthApp({ databasePath = 'server/data/auth.sqlite', production = process.env.NODE_ENV === 'production' } = {}) {
   if (databasePath !== ':memory:') mkdirSync(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath);
+  if (databasePath !== ':memory:') chmodSync(databasePath, 0o600);
+  const mfaEncryptionKey = loadMfaEncryptionKey(databasePath, production);
   database.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
@@ -95,7 +138,7 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
 
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', production ? 1 : false);
+  app.set('trust proxy', 1);
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
   app.use(express.json({ limit: '16kb' }));
   app.use('/api/auth', rateLimit({
@@ -254,7 +297,8 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
       if (user.mfa_enabled) {
         const code = typeof request.body.mfaCode === 'string' ? request.body.mfaCode.trim() : '';
         if (!code) return response.status(401).json({ error: 'Enter your authenticator code.', code: 'MFA_REQUIRED' });
-        if (!/^\d{6}$/.test(code) || !authenticator.check(code, user.mfa_secret)) {
+        if (!user.mfa_secret || !/^\d{6}$/.test(code)
+          || !authenticator.check(code, decryptMfaSecret(user.mfa_secret, mfaEncryptionKey))) {
           return response.status(401).json({ error: 'Authenticator code is invalid.', code: 'INVALID_MFA_CODE' });
         }
       }
@@ -267,11 +311,18 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
 
   app.post('/api/auth/mfa/setup', strictRateLimit(), requireUser, async (request, response, next) => {
     try {
+      const password = typeof request.body.password === 'string' ? request.body.password : '';
+      if (!(await bcrypt.compare(password, request.user.password_hash))) {
+        return response.status(403).json({ error: 'Confirm your password to set up an authenticator.' });
+      }
+      if (request.user.mfa_enabled) {
+        return response.status(409).json({ error: 'Turn off authenticator verification before setting it up again.' });
+      }
       const secret = authenticator.generateSecret();
       const otpauth = authenticator.keyuri(request.user.email, 'SmartShop', secret);
       const qrCode = await QRCode.toDataURL(otpauth);
       database.prepare('UPDATE users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?')
-        .run(secret, request.user.id);
+        .run(encryptMfaSecret(secret, mfaEncryptionKey), request.user.id);
       response.json({ secret, qrCode });
     } catch (error) {
       next(error);
@@ -280,7 +331,8 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
 
   app.post('/api/auth/mfa/enable', strictRateLimit(), requireUser, (request, response) => {
     const code = typeof request.body.code === 'string' ? request.body.code.trim() : '';
-    if (!request.user.mfa_secret || !/^\d{6}$/.test(code) || !authenticator.check(code, request.user.mfa_secret)) {
+    if (!request.user.mfa_secret || !/^\d{6}$/.test(code)
+      || !authenticator.check(code, decryptMfaSecret(request.user.mfa_secret, mfaEncryptionKey))) {
       return response.status(400).json({ error: 'Authenticator code is invalid. Try the current six-digit code.' });
     }
     database.prepare('UPDATE users SET mfa_enabled = 1 WHERE id = ?').run(request.user.id);
@@ -293,7 +345,9 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
       const password = typeof request.body.password === 'string' ? request.body.password : '';
       const code = typeof request.body.code === 'string' ? request.body.code.trim() : '';
       const passwordMatches = await bcrypt.compare(password, request.user.password_hash);
-      const codeMatches = /^\d{6}$/.test(code) && authenticator.check(code, request.user.mfa_secret ?? '');
+      const codeMatches = Boolean(request.user.mfa_enabled && request.user.mfa_secret)
+        && /^\d{6}$/.test(code)
+        && authenticator.check(code, decryptMfaSecret(request.user.mfa_secret, mfaEncryptionKey));
       if (!request.user.mfa_enabled || !passwordMatches || !codeMatches) {
         return response.status(400).json({ error: 'Password or authenticator code is incorrect.' });
       }
