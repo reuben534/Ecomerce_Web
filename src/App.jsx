@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowDownUp,
@@ -13,8 +13,10 @@ import {
   ShoppingBag,
   Sparkles,
   Truck,
+  UserRound,
   X,
 } from 'lucide-react';
+import AuthDialog from './AuthDialog.jsx';
 
 const products = [
   {
@@ -165,7 +167,7 @@ function ProductCard({ product, onAdd, onWishlist }) {
   );
 }
 
-function CartDrawer({ cart, onClose, onQuantityChange, onOrderPlaced }) {
+function CartDrawer({ cart, user, onClose, onQuantityChange, onOrderPlaced, onAuthRequired }) {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [deliveryMethod, setDeliveryMethod] = useState('standard');
   const [orderReference, setOrderReference] = useState('');
@@ -332,7 +334,11 @@ function CartDrawer({ cart, onClose, onQuantityChange, onOrderPlaced }) {
             <div className="drawer-footer">
               <div className="subtotal-line"><span>Subtotal</span><strong>{formatPrice(subtotal)}</strong></div>
               <p>Shipping and taxes are not calculated in this preview.</p>
-              <button className="button button-dark checkout-button" type="button" onClick={() => setCheckoutOpen(true)}>
+              <button
+                className="button button-dark checkout-button"
+                type="button"
+                onClick={() => user ? setCheckoutOpen(true) : onAuthRequired()}
+              >
                 Continue to checkout <ArrowRight size={17} />
               </button>
               <span className="checkout-note">Payment step is simulated · no card details requested</span>
@@ -352,7 +358,26 @@ function App() {
   const [cartOpen, setCartOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const searchInputRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/me', { credentials: 'same-origin' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => {
+        if (active) setAuthUser(result?.user ?? null);
+      })
+      .catch(() => {
+        if (active) setAuthUser(null);
+      })
+      .finally(() => {
+        if (active) setAuthLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   const visibleProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -391,6 +416,10 @@ function App() {
   }
 
   function requestWishlist() {
+    if (!authUser) {
+      setAuthOpen(true);
+      return;
+    }
     setToast('Please login or register to use wishlist.');
     window.setTimeout(() => setToast(''), 2400);
   }
@@ -434,6 +463,10 @@ function App() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </label>
+          <button className="account-button" type="button" onClick={() => setAuthOpen(true)} aria-label={authUser ? `Account for ${authUser.firstName}` : 'Sign in or create an account'}>
+            <UserRound size={18} />
+            <span>{authLoading ? 'Account' : authUser ? authUser.firstName : 'Sign in'}</span>
+          </button>
           <button className="bag-button" type="button" onClick={() => setCartOpen(true)} aria-label={`Open bag, ${cartCount} items`}>
             <ShoppingBag size={19} />
             <span className="bag-label">Bag</span>
@@ -547,7 +580,20 @@ function App() {
       </footer>
 
       {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
-      {cartOpen && <CartDrawer cart={cart} onClose={() => setCartOpen(false)} onQuantityChange={changeQuantity} onOrderPlaced={() => setCart([])} />}
+      {cartOpen && <CartDrawer
+        cart={cart}
+        user={authUser}
+        onClose={() => setCartOpen(false)}
+        onQuantityChange={changeQuantity}
+        onOrderPlaced={() => setCart([])}
+        onAuthRequired={() => setAuthOpen(true)}
+      />}
+      {authOpen && <AuthDialog
+        user={authUser}
+        onClose={() => setAuthOpen(false)}
+        onAuthenticated={setAuthUser}
+        onLoggedOut={() => setAuthUser(null)}
+      />}
       <button className="floating-filter" type="button" onClick={() => document.getElementById('the-edit')?.scrollIntoView({ behavior: 'smooth' })} aria-label="Browse filters">
         <Search size={18} />
       </button>
