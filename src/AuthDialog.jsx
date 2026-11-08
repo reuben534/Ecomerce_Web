@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, LoaderCircle, LockKeyhole, X } from 'lucide-react';
 
 async function authRequest(path, body) {
@@ -35,10 +35,12 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
   const [pendingEmail, setPendingEmail] = useState('');
   const [verificationToken, setVerificationToken] = useState('');
   const [devResetCode, setDevResetCode] = useState('');
+  const verificationStarted = useRef(false);
 
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get('verify');
-    if (!token) return;
+    if (!token || verificationStarted.current) return;
+    verificationStarted.current = true;
     setBusy(true);
     authRequest('verify-email', { token })
       .then((result) => {
