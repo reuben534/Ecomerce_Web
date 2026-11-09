@@ -5,11 +5,13 @@ import { createAuthApp } from './auth-app.mjs';
 
 let server;
 let database;
+let demoOrders;
 let baseUrl;
 
 before(async () => {
   const auth = createAuthApp({ databasePath: ':memory:', production: false });
   database = auth.database;
+  demoOrders = auth.demoOrders;
   server = auth.app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -29,24 +31,34 @@ async function post(path, body, cookie) {
 }
 
 test('registration, email verification, login, and password reset work end to end', async () => {
+  const password = 'Strong8!';
+  const shortPassword = await post('/api/auth/register', {
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    email: 'ada@example.com',
+    phone: '+27123456789',
+    password: 'Short7!',
+  });
+  assert.equal(shortPassword.status, 400);
+
   const registration = await post('/api/auth/register', {
     firstName: 'Ada',
     lastName: 'Lovelace',
     email: 'Ada@example.com',
     phone: '+27123456789',
-    password: 'StrongPass123!',
+    password,
   });
   assert.equal(registration.status, 201);
   const registrationBody = await registration.json();
   assert.match(registrationBody.devVerificationToken, /^[\w-]{40,}$/);
 
   const storedUser = database.prepare('SELECT password_hash FROM users WHERE email = ?').get('ada@example.com');
-  assert.notEqual(storedUser.password_hash, 'StrongPass123!');
+  assert.notEqual(storedUser.password_hash, password);
   assert.match(storedUser.password_hash, /^\$2[aby]\$/);
 
   const unverifiedLogin = await post('/api/auth/login', {
     email: 'ada@example.com',
-    password: 'StrongPass123!',
+    password,
   });
   assert.equal(unverifiedLogin.status, 403);
   assert.equal((await unverifiedLogin.json()).code, 'EMAIL_NOT_VERIFIED');
@@ -57,7 +69,7 @@ test('registration, email verification, login, and password reset work end to en
 
   const login = await post('/api/auth/login', {
     email: 'ada@example.com',
-    password: 'StrongPass123!',
+    password,
   });
   assert.equal(login.status, 200);
   const sessionCookie = login.headers.get('set-cookie')?.split(';')[0];
@@ -75,7 +87,7 @@ test('registration, email verification, login, and password reset work end to en
     mfaEnabled: false,
   });
 
-  const setup = await post('/api/auth/mfa/setup', { password: 'StrongPass123!' }, sessionCookie);
+  const setup = await post('/api/auth/mfa/setup', { password }, sessionCookie);
   assert.equal(setup.status, 200);
   const setupBody = await setup.json();
   assert.match(setupBody.qrCode, /^data:image\/png;base64,/);
@@ -85,17 +97,47 @@ test('registration, email verification, login, and password reset work end to en
   assert.equal(enableMfa.status, 200);
   assert.equal((await enableMfa.json()).user.mfaEnabled, true);
 
-  const missingMfa = await post('/api/auth/login', { email: 'ada@example.com', password: 'StrongPass123!' });
+  const missingMfa = await post('/api/auth/login', { email: 'ada@example.com', password });
   assert.equal(missingMfa.status, 401);
   assert.equal((await missingMfa.json()).code, 'MFA_REQUIRED');
 
   const mfaCode = authenticator.generate(setupBody.secret);
-  const mfaLogin = await post('/api/auth/login', { email: 'ada@example.com', password: 'StrongPass123!', mfaCode });
+  const mfaLogin = await post('/api/auth/login', { email: 'ada@example.com', password, mfaCode });
   assert.equal(mfaLogin.status, 200);
   const mfaSession = mfaLogin.headers.get('set-cookie')?.split(';')[0];
 
+  const checkout = {
+    items: [{ id: 1, quantity: 2, price: 1 }],
+    deliveryMethod: 'standard',
+    address: {
+      fullName: 'Ada Lovelace',
+      phone: '+27123456789',
+      province: 'Gauteng',
+      city: 'Pretoria',
+      streetAddress: '1 Analytical Engine Road',
+      postalCode: '0001',
+    },
+  };
+  const guestCheckout = await post('/api/checkout/simulate', checkout);
+  assert.equal(guestCheckout.status, 401);
+
+  const [simulatedPayment, paymentBody] = await post('/api/checkout/simulate', checkout, mfaSession);
+  assert.equal(simulatedPayment.status, 201);
+  assert.equal(paymentBody.order.subtotal, 3798);
+  assert.equal(paymentBody.order.payment.status, 'simulated');
+  assert.equal(paymentBody.order.payment.amount, 3798);
+  assert.equal(paymentBody.order.payment.moneyMoved, false);
+  assert.equal(paymentBody.order.payment.gateway, null);
+  assert.equal(demoOrders.get(paymentBody.order.reference).subtotal, 3798);
+
+  const storedOrder = await fetch(`${baseUrl}/api/checkout/demo-orders/${paymentBody.order.reference}`, {
+    headers: { cookie: mfaSession },
+  });
+  assert.equal(storedOrder.status, 200);
+  assert.equal((await storedOrder.json()).order.reference, paymentBody.order.reference);
+
   const disableMfa = await post('/api/auth/mfa/disable', {
-    password: 'StrongPass123!',
+    password,
     code: authenticator.generate(setupBody.secret),
   }, sessionCookie);
   assert.equal(disableMfa.status, 200);
@@ -127,7 +169,7 @@ test('registration, email verification, login, and password reset work end to en
 
   const oldPasswordLogin = await post('/api/auth/login', {
     email: 'ada@example.com',
-    password: 'StrongPass123!',
+    password,
   });
   assert.equal(oldPasswordLogin.status, 401);
 

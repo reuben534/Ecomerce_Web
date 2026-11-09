@@ -19,7 +19,7 @@ npm test
 
 ## Local Account Flow
 
-- Register with a name, email, phone number, and a password of at least 12 characters containing uppercase, lowercase, a number, and a symbol.
+- Register with a name, email, phone number, and a password of at least 8 characters containing uppercase, lowercase, a number, and a symbol.
 - In development, the verification action is shown in the account dialog; no email is sent.
 - Sign in after verification. Sessions use an HTTP-only cookie and persist in SQLite across server restarts until expiry or logout.
 - Password reset codes are shown in the development account dialog; no email or SMS is sent.

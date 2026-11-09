@@ -170,14 +170,48 @@ function ProductCard({ product, onAdd, onWishlist }) {
 function CartDrawer({ cart, user, onClose, onQuantityChange, onOrderPlaced, onAuthRequired }) {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [deliveryMethod, setDeliveryMethod] = useState('standard');
-  const [orderReference, setOrderReference] = useState('');
+  const [demoOrder, setDemoOrder] = useState(null);
+  const [paymentError, setPaymentError] = useState('');
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const subtotal = cart.reduce((total, item) => total + item.price * item.quantity, 0);
   const itemCount = cart.reduce((total, item) => total + item.quantity, 0);
 
-  function placeDemoOrder(event) {
+  async function placeDemoOrder(event) {
     event.preventDefault();
-    setOrderReference(`SS-DEMO-${Date.now().toString(36).toUpperCase()}`);
-    onOrderPlaced();
+    setPaymentBusy(true);
+    setPaymentError('');
+    const fields = new FormData(event.currentTarget);
+    try {
+      const response = await fetch('/api/checkout/simulate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          items: cart.map((item) => ({ id: item.id, quantity: item.quantity })),
+          deliveryMethod,
+          address: {
+            fullName: fields.get('fullName'),
+            phone: fields.get('phone'),
+            province: fields.get('province'),
+            city: fields.get('city'),
+            streetAddress: fields.get('streetAddress'),
+            postalCode: fields.get('postalCode'),
+          },
+        }),
+      });
+      const result = await response.json();
+      if (response.status === 401) {
+        onAuthRequired();
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? 'Could not simulate payment. Please try again.');
+      setDemoOrder(result.order);
+      onOrderPlaced(result.order);
+    } catch (error) {
+      setPaymentError(error.message);
+    } finally {
+      setPaymentBusy(false);
+    }
   }
 
   return (
@@ -191,29 +225,30 @@ function CartDrawer({ cart, user, onClose, onQuantityChange, onOrderPlaced, onAu
       >
         <div className="drawer-header">
           <div>
-            <span className="eyebrow">{orderReference ? 'LOCAL PREVIEW' : checkoutOpen ? 'DELIVERY + PAYMENT' : 'YOUR GOOD FINDS'}</span>
-            <h2 id="cart-title">{orderReference ? 'Order received' : checkoutOpen ? 'Checkout' : <>Your bag <span>({itemCount})</span></>}</h2>
+            <span className="eyebrow">{demoOrder ? 'LOCAL PREVIEW' : checkoutOpen ? 'DELIVERY + PAYMENT' : 'YOUR GOOD FINDS'}</span>
+            <h2 id="cart-title">{demoOrder ? 'Order received' : checkoutOpen ? 'Checkout' : <>Your bag <span>({itemCount})</span></>}</h2>
           </div>
           <button className="icon-button" type="button" aria-label="Close bag" onClick={onClose}>
             <X size={20} />
           </button>
         </div>
 
-        {orderReference ? (
+        {demoOrder ? (
           <div className="order-confirmation">
             <div className="confirmation-icon"><Check size={26} /></div>
-            <span className="eyebrow">DEMO ORDER CREATED</span>
-            <h3>Your order is ready for its next step.</h3>
-            <div className="order-reference"><span>Order reference</span><strong>{orderReference}</strong></div>
+            <span className="eyebrow">IN-MEMORY DEMO ORDER</span>
+            <h3>Payment simulation complete.</h3>
+            <div className="order-reference"><span>Order reference</span><strong>{demoOrder.reference}</strong></div>
             <div className="payment-simulated"><Check size={14} /> Payment simulated</div>
-            <p>No money moved and no card details were collected. This demo order is not saved to a server and will be lost when you close or refresh this page.</p>
+            <div className="order-reference"><span>Simulated total</span><strong>{formatPrice(demoOrder.payment.amount)}</strong></div>
+            <p>No money moved or card details collected. The order and payment record exist only in server memory and disappear when the API restarts.</p>
             <button className="button button-dark" type="button" onClick={onClose}>
               Continue shopping <ArrowRight size={16} />
             </button>
           </div>
         ) : checkoutOpen ? (
           <form className="checkout-form" onSubmit={placeDemoOrder}>
-            <p className="checkout-disclaimer">Demo only. Payment is simulated in this browser; no card details or real money are involved.</p>
+            <p className="checkout-disclaimer">Demo only. Payment is simulated in server memory; no card details or real money are involved.</p>
 
             <div className="checkout-fields">
               <label className="checkout-field field-wide">
@@ -273,15 +308,16 @@ function CartDrawer({ cart, user, onClose, onQuantityChange, onOrderPlaced, onAu
                 <span className="payment-option-copy"><strong>Demo payment</strong><small>No gateway connected</small></span>
                 <span className="payment-tag">SIMULATED</span>
               </div>
-              <p>Continue to simulate a successful payment. No payment information is entered or stored.</p>
+              <p>The local server records a simulated payment only. No payment information is entered or stored.</p>
             </fieldset>
 
             <div className="checkout-summary">
               <div className="subtotal-line"><span>Merchandise subtotal</span><strong>{formatPrice(subtotal)}</strong></div>
-              <p>Delivery fees and taxes are not calculated in this preview.</p>
+              <p>Server verifies product prices. Delivery fees and taxes are not included.</p>
             </div>
-            <button className="button button-dark checkout-button" type="submit">
-              Simulate payment <ArrowRight size={17} />
+            {paymentError && <p className="auth-error" role="alert">{paymentError}</p>}
+            <button className="button button-dark checkout-button" type="submit" disabled={paymentBusy}>
+              {paymentBusy ? 'Recording demo payment…' : 'Simulate payment'} <ArrowRight size={17} />
             </button>
           </form>
         ) : cart.length === 0 ? (

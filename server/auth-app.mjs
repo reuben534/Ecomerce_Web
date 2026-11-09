@@ -13,6 +13,16 @@ const SESSION_COOKIE = 'smartshop_session';
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 const TOKEN_LIFETIME_MS = 30 * 60 * 1000;
 const PASSWORD_HASH_ROUNDS = 12;
+const DEMO_PRODUCT_PRICES = new Map([
+  [1, 1899],
+  [2, 7499],
+  [3, 2499],
+  [4, 5299],
+  [5, 1199],
+  [6, 1699],
+  [7, 899],
+  [8, 1399],
+]);
 authenticator.options = { window: 1 };
 
 function digest(value) {
@@ -66,7 +76,7 @@ function normalizeEmail(value) {
 
 function validPassword(value) {
   return typeof value === 'string'
-    && value.length >= 12
+    && value.length >= 8
     && value.length <= 128
     && /[a-z]/.test(value)
     && /[A-Z]/.test(value)
@@ -101,6 +111,7 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
   const database = new DatabaseSync(databasePath);
   if (databasePath !== ':memory:') chmodSync(databasePath, 0o600);
   const mfaEncryptionKey = loadMfaEncryptionKey(databasePath, production);
+  const demoOrders = new Map();
   database.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
@@ -201,10 +212,69 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
     next();
   }
 
+  function simulatePayment(request, response) {
+    if (production) return response.status(404).json({ error: 'Demo payments are not available in production.' });
+    const body = request.body ?? {};
+    const items = body.items;
+    const deliveryMethod = body.deliveryMethod;
+    const address = body.address;
+    if (!Array.isArray(items) || items.length === 0 || items.length > 30) {
+      return response.status(400).json({ error: 'Add between 1 and 30 products before checking out.' });
+    }
+    if (!['standard', 'express'].includes(deliveryMethod)) {
+      return response.status(400).json({ error: 'Choose a valid delivery method.' });
+    }
+
+    const fields = ['fullName', 'phone', 'province', 'city', 'streetAddress', 'postalCode'];
+    const deliveryAddress = {};
+    for (const field of fields) {
+      const value = typeof address?.[field] === 'string' ? address[field].trim() : '';
+      const label = field.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`);
+      if (!value || value.length > 160) return response.status(400).json({ error: `Enter a valid ${label}.` });
+      deliveryAddress[field] = value;
+    }
+
+    const orderItems = [];
+    const seenProductIds = new Set();
+    for (const item of items) {
+      const productId = Number(item?.id);
+      const quantity = Number(item?.quantity);
+      const unitPrice = DEMO_PRODUCT_PRICES.get(productId);
+      if (!Number.isInteger(productId) || !unitPrice || !Number.isInteger(quantity) || quantity < 1 || quantity > 99 || seenProductIds.has(productId)) {
+        return response.status(400).json({ error: 'One or more cart items are invalid. Please review your bag.' });
+      }
+      seenProductIds.add(productId);
+      orderItems.push({ productId, quantity, unitPrice });
+    }
+
+    const subtotal = orderItems.reduce((total, item) => total + item.unitPrice * item.quantity, 0);
+    const reference = `SS-DEMO-${randomBytes(5).toString('hex').toUpperCase()}`;
+    const order = {
+      reference,
+      status: 'demo',
+      items: orderItems,
+      deliveryMethod,
+      address: deliveryAddress,
+      subtotal,
+      currency: 'ZAR',
+      payment: {
+        reference: `PAY-DEMO-${randomBytes(5).toString('hex').toUpperCase()}`,
+        status: 'simulated',
+        amount: subtotal,
+        currency: 'ZAR',
+        moneyMoved: false,
+        gateway: null,
+      },
+      createdAt: new Date().toISOString(),
+    };
+    demoOrders.set(reference, { ...order, userId: request.user.id });
+    response.status(201).json({ order });
+  }
+
   function validatePasswordOrRespond(password, response) {
     if (validPassword(password)) return true;
     response.status(400).json({
-      error: 'Use 12–128 characters with at least one uppercase letter, lowercase letter, number, and symbol.',
+      error: 'Use 8–128 characters with at least one uppercase letter, lowercase letter, number, and symbol.',
       code: 'WEAK_PASSWORD',
     });
     return false;
@@ -215,6 +285,15 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
   app.get('/api/auth/me', (request, response) => {
     const user = currentUser(request);
     response.json({ user: user ? publicUser(user) : null });
+  });
+
+  app.post('/api/checkout/simulate', strictRateLimit(), requireUser, simulatePayment);
+
+  app.get('/api/checkout/demo-orders/:reference', requireUser, (request, response) => {
+    const order = demoOrders.get(request.params.reference);
+    if (!order || order.userId !== request.user.id) return response.status(404).json({ error: 'Demo order not found.' });
+    const { userId: _userId, ...publicOrder } = order;
+    response.json({ order: publicOrder });
   });
 
   app.post('/api/auth/register', strictRateLimit(), async (request, response, next) => {
@@ -414,5 +493,5 @@ export function createAuthApp({ databasePath = 'server/data/auth.sqlite', produc
     response.status(500).json({ error: 'Something went wrong. Please try again.' });
   });
 
-  return { app, database };
+  return { app, database, demoOrders };
 }

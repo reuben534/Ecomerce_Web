@@ -334,9 +334,9 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
               </div>
               <AuthField label="Email address" name="email" type="email" autoComplete="email" />
               <AuthField label="Mobile number" name="phone" type="tel" autoComplete="tel" />
-              <AuthField label="Password" name="password" type="password" autoComplete="new-password" minLength={12} />
-              <p className="auth-hint">12+ characters, including uppercase, lowercase, a number, and a symbol.</p>
-              <AuthField label="Confirm password" name="confirmPassword" type="password" autoComplete="new-password" minLength={12} />
+              <AuthField label="Password" name="password" type="password" autoComplete="new-password" minLength={8} />
+              <p className="auth-hint">8+ characters, including uppercase, lowercase, a number, and a symbol.</p>
+              <AuthField label="Confirm password" name="confirmPassword" type="password" autoComplete="new-password" minLength={8} />
               <button className="button button-dark auth-submit" type="submit" disabled={busy}>
                 {busy ? <LoaderCircle className="auth-spinner" size={17} /> : <>Create account <ArrowRight size={16} /></>}
               </button>
@@ -389,8 +389,8 @@ function AuthDialog({ user, onClose, onAuthenticated, onLoggedOut }) {
               <p className="auth-intro">Reset code sent to <strong>{pendingEmail}</strong>.</p>
               {devResetCode && <div className="dev-code"><span>Local development reset code</span><strong>{devResetCode}</strong></div>}
               <AuthField label="Reset code" name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} />
-              <AuthField label="New password" name="password" type="password" autoComplete="new-password" minLength={12} />
-              <AuthField label="Confirm new password" name="confirmPassword" type="password" autoComplete="new-password" minLength={12} />
+              <AuthField label="New password" name="password" type="password" autoComplete="new-password" minLength={8} />
+              <AuthField label="Confirm new password" name="confirmPassword" type="password" autoComplete="new-password" minLength={8} />
               <button className="button button-dark auth-submit" type="submit" disabled={busy}>
                 {busy ? <LoaderCircle className="auth-spinner" size={17} /> : <>Set new password <ArrowRight size={16} /></>}
               </button>
